@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from dependency_injector.wiring import inject, Provide
 from container import Container
 import boto3
+from connectors.minio import MinioConnector
 
 router = APIRouter()
 
@@ -14,7 +15,7 @@ router = APIRouter()
 async def upload_image(
         request: Request,
         image: UploadFile = File(...),
-        s3_client: boto3.client = Depends(Provide[Container.s3_client])
+        minio_connector: MinioConnector = Depends(Provide[Container.minio_connector])
 ) -> JSONResponse:
     config = request.app.state.Config
     # Генерация уникального имени файла и формирование ключа
@@ -23,14 +24,14 @@ async def upload_image(
     s3_key = f"images/{unique_filename}"
 
     # Загрузка файла в MinIO
-    s3_client.upload_fileobj(
+    minio_connector.upload_fileobj(
         image.file,
-        Bucket=config.MINIO_BUCKET_IMAGES,
-        Key=s3_key,
-        ExtraArgs={'ACL': 'public-read', 'ContentType': image.content_type},
+        bucket=config.MINIO_BUCKET_IMAGES,
+        key=s3_key,
+        extra_args={'ACL': 'public-read', 'ContentType': image.content_type},
     )
 
     # Формирование URL картинки
     image_url = f"http://{config.MINIO_ENDPOINT}/{config.MINIO_BUCKET_IMAGES}/{s3_key}"
 
-    return JSONResponse(content={'url': image_url})
+    return JSONResponse(content={'url': image_url}, status_code=200)
