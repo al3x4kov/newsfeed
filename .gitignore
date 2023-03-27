@@ -2,3 +2,4 @@
 .pytest_cache
 local.*
 /app/tmp/
+/venv
