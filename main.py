@@ -60,4 +60,3 @@ async def upload_image(image: UploadFile = File(...)):
     print(image_url)
 
     return JSONResponse(content={'url': image_url})
-
