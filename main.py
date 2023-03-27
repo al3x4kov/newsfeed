@@ -1,62 +1,75 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from botocore.client import Config
-import boto3
-
 import os
-import uuid
+import uvicorn
+import sys
+from fastapi import FastAPI
 
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-MINIO_ENDPOINT = "localhost:9000"  # Адрес MinIO сервера
-MINIO_ACCESS_KEY = "O9wiTVeXo91tjcgi"
-MINIO_SECRET_KEY = "LCC4WJwMakJyDZgRxsw1pZJgSafJfD3t"
-MINIO_BUCKET = "photos"
-
-s3_client = boto3.client(
-    "s3",
-    endpoint_url=f"http://{MINIO_ENDPOINT}",
-    aws_access_key_id=MINIO_ACCESS_KEY,
-    aws_secret_access_key=MINIO_SECRET_KEY,
-    config=Config(signature_version="s3v4"),
-)
+from fastapi.middleware.cors import CORSMiddleware
+import logging
+from container import Container
+from starlette.middleware.gzip import GZipMiddleware
+from routers import api_router
+from config import Config
 
 
-def create_bucket_if_not_exists():
-    buckets = s3_client.list_buckets()
-    if MINIO_BUCKET not in [bucket["Name"] for bucket in buckets["Buckets"]]:
-        s3_client.create_bucket(Bucket=MINIO_BUCKET)
-
-
-create_bucket_if_not_exists()
-
-
-@app.post('/upload-image')
-async def upload_image(image: UploadFile = File(...)):
-    # Генерация уникального имени файла и формирование ключа
-    file_extension = os.path.splitext(image.filename)[-1]
-    unique_filename = f"{uuid.uuid4()}{file_extension}"
-    s3_key = f"images/{unique_filename}"
-
-    # Загрузка файла в MinIO
-    s3_client.upload_fileobj(
-        image.file,
-        Bucket=MINIO_BUCKET,
-        Key=s3_key,
-        ExtraArgs={'ACL': 'public-read', 'ContentType': image.content_type},
+def create_app(
+) -> FastAPI:
+    container = Container()
+    container.init_resources()
+    container.wire(modules=[
+        sys.modules[__name__],
+        sys.modules['routers.api'],
+        # sys.modules['connectors.minio']
+    ],
+        packages=["routers.api", "connectors.minio"],
     )
+    try:
 
-    # Формирование URL картинки
-    image_url = f"http://{MINIO_ENDPOINT}/{MINIO_BUCKET}/{s3_key}"
-    print(image_url)
+        # App
+        app = FastAPI()
 
-    return JSONResponse(content={'url': image_url})
+        # middleware
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        # fix problem to ignore that exception if the request is disconnected
+        # https://github.com/encode/starlette/issues/1634#issuecomment-1124806406
+        app.add_middleware(GZipMiddleware)
+
+        # Config
+        app.state.Config = Config()
+
+        # Routers
+        app.include_router(api_router)
+
+        # minio check buckets if exist
+
+        logger = logging.getLogger(__name__)
+
+        @app.on_event("startup")
+        async def on_startup() -> None:
+            logger.info("Приложение запущено")
+
+        @app.on_event("shutdown")
+        async def on_shutdown() -> None:
+            logger.info("Приложение выключено")
+
+        return app
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.exception(f"Service crashed vs Exception: {e}")
+
+
+if __name__ == "__main__":
+    app = create_app()
+
+    uvicorn.run(
+        app,
+        host=os.environ.get("SERVICE_HOST", "0.0.0.0"),
+        port=int(os.environ.get("SERVICE_ENDPOINT_PORT", 8081)),
+        workers=int(os.environ.get("SERVICE_UVICORN_WORKERS", 1))
+    )
